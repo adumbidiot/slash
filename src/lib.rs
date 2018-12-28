@@ -3,17 +3,14 @@ extern crate glutin;
 extern crate nalgebra;
 
 mod graphics;
+mod resources;
 
 use self::graphics::Graphics;
 
 use glutin::GlContext;
 
-use gl::types::GLfloat;
-use gl::types::GLsizeiptr;
-use gl::types::GLboolean;
+use gl::types::{GLfloat, GLsizeiptr, GLboolean};
 
-use std::mem;
-use std::ptr;
 use std::ffi::CString;
 
 
@@ -85,72 +82,17 @@ impl App{
 		// Load the OpenGL function pointers
 		// TODO: `as *const _` will not be needed once glutin is updated to the latest gl version
 		gl::load_with(|symbol| gl_window.get_proc_address(symbol) as *const _);
-		
-let vs_src = "
-#version 150
-in vec2 position;
-uniform mat4 Projection;
-void main() {
-    gl_Position = Projection * vec4(position.x, position.y, 0.0, 1.0);
-}";
 
-let fs_src = "
-#version 150
-out vec4 out_color;
-void main() {
-    out_color = vec4(0.5, 1.0, 1.0, 1.0);
-}";
-
-
-
-		let vertex_data: [GLfloat; 12] = [
-			-100.5, 100.5, 
-			100.5, 100.5, 
-			-100.5, -100.5, 
-			
-			-100.5, -100.5,
-			100.5, -100.5,
-			100.5, 100.5,
-		];
+		let mut sprite_renderer = graphics::SpriteRenderer::new(&mut self.graphics, self.width as f32, self.height as f32);
+		sprite_renderer.enable();
 		
-		let mut vao = 0;
-		let mut vbo = 0;
+		let mut x = 0.0;
+		let mut y = 0.0;
+		let mut dx = 1.0 / 3.0;
+		let mut dy = 2.0;
+		let width = 100.0;
+		let height = 100.0;
 		
-		unsafe {
-			gl::GenVertexArrays(1, &mut vao);
-			gl::BindVertexArray(vao);
-			
-			gl::GenBuffers(1, &mut vbo);
-			gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
-			
-			let vertex_size: GLsizeiptr = (vertex_data.len() * mem::size_of::<GLfloat>()) as GLsizeiptr;
-			gl::BufferData(
-				gl::ARRAY_BUFFER, 
-				vertex_size, 
-				mem::transmute(&vertex_data[0]), 
-				gl::STATIC_DRAW
-			);
-			
-			gl::EnableVertexAttribArray(0);
-			gl::VertexAttribPointer(
-				0,
-				2,
-				gl::FLOAT,
-				gl::FALSE as GLboolean,
-				0,
-				ptr::null(),
-			);
-		}
-		
-		let vs = self.graphics.compile_shader(vs_src, gl::VERTEX_SHADER);
-		let fs = self.graphics.compile_shader(fs_src, gl::FRAGMENT_SHADER);
-		let projection_mat = nalgebra::Orthographic3::new(0.0, 300.0, 0.0, 300.0, -1.0, 1.0).unwrap();
-		
-		let mut shader_program = graphics::ShaderProgram::compile(vs, fs).unwrap();
-		shader_program.enable();
-		shader_program.set_uniform_matrix4("Projection", projection_mat.as_slice());
-		
-
 		let mut running = true;
 		while running {
 			self.events_loop.poll_events(|event| {
@@ -168,19 +110,21 @@ void main() {
 			});
 	
 			self.graphics.clear();
-			unsafe {
-				gl::DrawArrays(gl::TRIANGLES, 0, 6);
+			
+			x += dx;
+			y += dy;
+			
+			if x as f64 >= self.width - width as f64 || x <= 0.0{
+				dx = -dx;
 			}
 			
+			if y as f64 >= self.height - height as f64 || y <= 0.0{
+				dy = -dy;
+			}
+			
+			sprite_renderer.draw_rect(x, y, width, height);
+			
 			gl_window.swap_buffers().unwrap();
-		}
-		
-		shader_program.free();
-		unsafe {
-			gl::DeleteShader(fs);
-			gl::DeleteShader(vs);
-			gl::DeleteBuffers(1, &vbo);
-			gl::DeleteVertexArrays(1, &vao);
 		}
 	}
 }
