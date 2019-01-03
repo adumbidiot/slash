@@ -2,27 +2,28 @@ extern crate gl;
 extern crate glutin;
 extern crate nalgebra;
 
-mod graphics;
-mod resources;
+pub mod graphics;
+pub mod subsystems;
+//mod resources;
 
 use self::graphics::Graphics;
+use self::subsystems::{Window, Event};
 
-use glutin::GlContext;
+pub enum SlashError{
+	NoWindow,
+}
 
-use gl::types::{GLfloat, GLsizeiptr, GLboolean};
+pub type SlashResult<T> = Result<T, SlashError>;
 
-use std::ffi::CString;
-
-
-struct Config {
+pub struct AppState {
 	width: f64,
 	height: f64,
 	title: String,
 }
 
-impl Config{
+impl AppState{
 	pub fn new() -> Self{
-		return Config {
+		return AppState {
 			width: 1920.0,
 			height: 1080.0,
 			title: String::from("Slash"),
@@ -30,118 +31,178 @@ impl Config{
 	}
 }
 
-struct App{
+pub struct App<'a>{
 	graphics: Graphics,
+	window: Window,
 	
-	width: f64,
-	height: f64,
-	title: String,
+	app_state: AppState,
 	
-	events_loop: glutin::EventsLoop,
+	running: bool,
+	state: Box<State + 'a>,
 }
 
-impl App{
-	fn new() -> Self{
+impl<'a> App<'a>{
+	pub fn new() -> Self{
+		let app_state = AppState::new();
 		return App{
 			graphics: Graphics::new(),
+			window: Window::new(),
 			
-			width: 1920.0,
-			height: 1080.0,
-			title: String::from("Slash"),
-			
-			events_loop: glutin::EventsLoop::new(),
+			app_state,
+
+			running: false,
+			state: Box::new(DefaultState::new()),
 		};
 	}
 	
-	fn config(&mut self, c: Config){
-		self.width = c.width;
-		self.height = c.height;
+	pub fn init_app_state(&mut self, app_state: AppState){
+		self.app_state = app_state;
 	}
 	
-	fn init(&mut self){
-	
+	pub fn set_state<T: State + 'a>(&mut self, state: T){
+		self.state = Box::new(state);
 	}
 	
-	fn main_loop(&mut self){
-		let win_size = glutin::dpi::LogicalSize::new(self.width, self.height);
-		
-		let window = glutin::WindowBuilder::new()
-			.with_dimensions(win_size)
-			.with_title(self.title.clone())
-			.with_resizable(false);
-		let context = glutin::ContextBuilder::new()
-			.with_vsync(true);
-		let gl_window = glutin::GlWindow::new(window, context, &self.events_loop).unwrap();
-		
-		unsafe { 
-			gl_window.make_current().unwrap() 
-		};
-		
-		self.graphics.init();
+	pub fn init(&mut self){
+		self.window.init(&self.app_state);
+		self.graphics.init(self.app_state.width as f32, self.app_state.height as f32);
+		self.running = true;
+	}
+	
+	pub fn main_loop(&mut self) -> SlashResult<()>{
+		self.window.update();
 
-		// Load the OpenGL function pointers
-		// TODO: `as *const _` will not be needed once glutin is updated to the latest gl version
-		gl::load_with(|symbol| gl_window.get_proc_address(symbol) as *const _);
-
-		let mut sprite_renderer = graphics::SpriteRenderer::new(&mut self.graphics, self.width as f32, self.height as f32);
-		sprite_renderer.enable();
-		
-		let mut x = 0.0;
-		let mut y = 0.0;
-		let mut dx = 1.0 / 3.0;
-		let mut dy = 2.0;
-		let width = 100.0;
-		let height = 100.0;
-		
-		let mut running = true;
-		while running {
-			self.events_loop.poll_events(|event| {
-				match event {
-					glutin::Event::WindowEvent{ event, .. } => match event {
-						glutin::WindowEvent::CloseRequested => running = false,
-						glutin::WindowEvent::Resized(logical_size) => {
-							let dpi_factor = gl_window.get_hidpi_factor();
-							gl_window.resize(logical_size.to_physical(dpi_factor));
-						},
-						_ => ()
-					},
-					_ => ()
+		while let Some(event) = self.window.handle_event() {
+			match event {
+				Event::Close => self.running = false,
+				_=> {
+					
 				}
-			});
-	
-			self.graphics.clear();
-			
-			x += dx;
-			y += dy;
-			
-			if x as f64 >= self.width - width as f64 || x <= 0.0{
-				dx = -dx;
 			}
-			
-			if y as f64 >= self.height - height as f64 || y <= 0.0{
-				dy = -dy;
-			}
-			
-			sprite_renderer.draw_rect(x, y, width, height);
-			
-			gl_window.swap_buffers().unwrap();
+		}
+		
+		self.graphics.clear();
+		
+		let state = &mut self.state;
+		state.update(&self.app_state);
+		state.render(&mut self.graphics, &self.app_state);
+		
+		return Ok(());
+	}
+}
+
+pub trait State {
+	fn new() -> Self where Self: Sized;
+	fn init(&mut self, app: &mut App){}
+	fn update(&mut self, state: &AppState){}
+	fn render(&mut self, graphics: &mut Graphics, state: &AppState){}
+}
+
+struct DefaultState;
+
+impl State for DefaultState{
+	fn new() -> Self{
+		DefaultState {
+		
 		}
 	}
 }
 
 #[cfg(test)]
 mod tests {
-	use super::{App, Config};
+	use super::{
+		App, 
+		AppState, 
+		State, 
+		graphics::{
+			Color, 
+			Graphics
+		}
+	};
+	
+	struct GameBoard{
+		block_width: f32,
+		block_height: f32,
+		board_state: [u8; 9],
+		x: f32,
+		y: f32,
+		dx: f32,
+		dy: f32,
+	}
+	
+	impl State for GameBoard{
+		fn new() -> Self{
+			GameBoard {
+				block_width: 100.0,
+				block_height: 100.0,
+				board_state: [0; 9],
+				
+				x: 0.0,
+				y: 0.0,
+				dx: 1.0 / 3.0,
+				dy: 2.0,
+			}
+		}
+		
+		fn update(&mut self, state: &AppState){
+			self.x += self.dx;
+			self.y += self.dy;
+			
+			if self.x as f64 >= state.width - self.block_width as f64 || self.x <= 0.0{
+				self.dx = -self.dx;
+			}
+				
+			if self.y as f64 >= state.height - self.block_height as f64 || self.y <= 0.0{
+				self.dy = -self.dy;
+			}
+		}
+		
+		fn render(&mut self, graphics: &mut Graphics, state: &AppState){
+			graphics.get_error();
+			let sprite_renderer = graphics.sprite_renderer.as_mut().expect("No Sprite Renderer");
+			sprite_renderer.enable_quad();
+			sprite_renderer.draw_rect(0.0, 0.0, state.width as f32, state.height as f32, &Color::from_rgba(48, 48, 48, 255));
+			
+			for i in 0..9 {
+				let color = if i % 2 == 0{
+					Color::from_rgba(255, 0, 0, 255)
+				}else{
+					Color::from_rgba(119, 119, 119, 255)
+				};
+				
+				let x = (i % 3) as f32 * self.block_width;
+				let y = (state.height - 100.0) as f32 - (i / 3) as f32 * self.block_height;
+				sprite_renderer.draw_rect(x, y, self.block_width, self.block_height, &color);
+			}
+			
+			sprite_renderer.draw_rect(self.x, self.y, self.block_width, self.block_height, &Color::from_rgba(255, 255, 6, 133));
+			
+			sprite_renderer.enable_circle();
+			sprite_renderer.draw_circle(50.0, state.height as f32 - 50.0, 100.0, 100.0);
+			
+			sprite_renderer.enable_line();
+			sprite_renderer.draw_line(50.0, 100.0, 100.0, 50.0, 10.0);
+			sprite_renderer.draw_line(100.0, 100.0, 50.0, 50.0, 10.0);
+			
+			sprite_renderer.draw_line(180.0, 100.0, 40.0, 40.0, 10.0);
+		}
+	}
 	
     #[test]
     fn setup() {
 		let mut app = App::new();
-		let mut c = Config::new();
-		c.width = 480.0;
-		c.height = 360.0;
+		let mut app_state = AppState::new();
 		
-		app.config(c);
+		app_state.width = 480.0;
+		app_state.height = 360.0;
+		app_state.title = String::from("Tic Tac Toe Test");
+		
+		app.init_app_state(app_state);
+		app.set_state(GameBoard::new());
 		app.init();
-		app.main_loop();
+		
+		while app.running && app.main_loop().is_ok(){
+			
+		}
     }
 }

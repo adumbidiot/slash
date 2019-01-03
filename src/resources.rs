@@ -1,13 +1,21 @@
 use std::collections::HashMap;
 
 pub enum Resource{
-	Image,
+	Image{
+		width: u32,
+		height: u32,
+		data: Vec<u8>,
+	},
 }
 
 pub struct ResourceHandle{
 	name: String,
 	path: String,
 	data: Option<Box<Resource>>,
+}
+
+impl ResourceHandle{
+
 }
 
 pub struct ResourceManager{
@@ -22,6 +30,10 @@ impl ResourceManager{
 	}
 	
 	pub fn add_resource(&mut self, name: String, path: String){
+		
+	}
+	
+	pub fn load_resource(&mut self, name: &str){
 		
 	}
 	
