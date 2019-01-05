@@ -18,9 +18,9 @@ pub enum SlashError{
 pub type SlashResult<T> = Result<T, SlashError>;
 
 pub struct AppState {
-	width: f64,
-	height: f64,
-	title: String,
+	pub width: f64,
+	pub height: f64,
+	pub title: String,
 }
 
 impl AppState{
@@ -37,10 +37,10 @@ pub struct App<'a>{
 	graphics: Graphics,
 	window: Window,
 	
-	app_state: AppState,
+	pub app_state: AppState,
 	
-	running: bool,
-	state: Box<State + 'a>,
+	pub running: bool,
+	pub state: Box<State + 'a>,
 }
 
 impl<'a> App<'a>{
