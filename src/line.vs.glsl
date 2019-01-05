@@ -1,6 +1,6 @@
 #version 330 core
 
-layout (location = 3) in vec2 position;
+layout (location = 2) in vec2 position;
 uniform mat4 Projection;
 
 void main() {

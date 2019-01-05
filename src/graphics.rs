@@ -1,6 +1,9 @@
 mod backends;
 
-//pub use backends::*;
+use crate::primitives::{	
+	Rect,
+	Point as SlashPoint,
+};
 
 use gl::types::{GLenum, GLuint, GLint, GLboolean, GLsizeiptr, GLfloat, GLchar};
 
@@ -56,6 +59,9 @@ impl Graphics{
 					gl::INVALID_OPERATION => {
 						println!("GL Error: Invalid Operation");
 					},
+					gl::INVALID_VALUE => {
+						println!("GL Error: Invalid Value");
+					},
 					_=> {
 						println!("GL Error: {}", err);
 					}
@@ -86,6 +92,12 @@ impl VertexArrayObject{
 	pub fn enable(&mut self){
 		unsafe {
 			gl::BindVertexArray(self.id);
+		}
+	}
+	
+	pub fn enable_attribute(&mut self, id: u32){
+		unsafe{
+			gl::EnableVertexAttribArray(id);
 		}
 	}
 }
@@ -197,6 +209,70 @@ impl Drop for ElementBufferObject{
 	}
 }
 
+pub struct Texture {
+	id: GLuint,
+}
+
+impl Texture {
+	pub fn new() -> Self{
+		let mut id = 0;
+		
+		unsafe{ 
+			gl::GenTextures(1, &mut id);
+		}
+		
+		Texture {
+			id
+		}
+	}
+	
+	pub fn enable(&mut self){
+		unsafe{
+			gl::BindTexture(gl::TEXTURE_2D, self.id);
+		}
+	}
+	
+	pub fn set(&mut self, width: i32, height: i32, data: &[u8]){
+		unsafe{
+			gl::TexImage2D(
+				gl::TEXTURE_2D, 
+				0, 
+				gl::RED as i32, 
+				width, 
+				height, 
+				0, 
+				gl::RGB, 
+				gl::UNSIGNED_BYTE, 
+				std::mem::transmute(&data[0])
+			);
+		}
+	}
+
+	pub fn update(&mut self, rect: &Rect, data: &[u8]){
+		unsafe {
+			gl::TexSubImage2D(
+				gl::TEXTURE_2D,
+				0,
+				rect.x as i32,
+				rect.y as _,
+				rect.width as _,
+				rect.height as _,
+				gl::RED,
+				gl::UNSIGNED_BYTE,
+				std::mem::transmute(&data[0])
+			);
+		}
+	}
+}
+
+impl Drop for Texture {
+	fn drop(&mut self){
+		unsafe {
+			gl::DeleteTextures(1, &self.id);
+		}
+	}
+}
+
 pub struct ShaderProgram {
 	pub id: GLuint
 }
@@ -296,7 +372,15 @@ pub struct SpriteRenderer {
 	line_program: ShaderProgram,
 	line_vbo: VertexBufferObject,
 	
+	text_vbo: VertexBufferObject,
+	text_texture: Texture,
+	text_program: ShaderProgram,
+	
+	font: rusttype::Font<'static>,
+	font_cache: rusttype::gpu_cache::Cache<'static>,
 	ortho: nalgebra::base::Matrix4<f32>,
+	
+	test: u32,
 }
 
 impl SpriteRenderer {
@@ -308,17 +392,13 @@ impl SpriteRenderer {
 			0.0, 1.0,	-1.0, 1.0
 		];
 		
-		let mut circle_vertex_data = Vec::new();
-		let circle_vert_count = 200;
-		let radius = 1.0;
-		for i in 0..circle_vert_count {
-			let heading = 2.0 * std::f32::consts::PI * i as f32 / circle_vert_count as f32;
-			circle_vertex_data.push(heading.cos() * radius);
-			circle_vertex_data.push(heading.sin() * radius);
-		}
-		
 		let mut quad_vao = VertexArrayObject::new();
 		quad_vao.enable();
+		quad_vao.enable_attribute(0);
+		quad_vao.enable_attribute(1);
+		quad_vao.enable_attribute(2);
+		quad_vao.enable_attribute(3);
+		quad_vao.enable_attribute(4);
 		
 		let mut quad_vbo = VertexBufferObject::new();
 		quad_vbo.enable();
@@ -326,7 +406,6 @@ impl SpriteRenderer {
 		
 		//TODO: VAO or VBO?
 		unsafe{			
-			gl::EnableVertexAttribArray(0);
 			gl::VertexAttribPointer(
 				0,
 				2,
@@ -336,7 +415,6 @@ impl SpriteRenderer {
 				ptr::null(),
 			);
 			
-			gl::EnableVertexAttribArray(1);
 			gl::VertexAttribPointer(
 				1,
 				2,
@@ -345,16 +423,54 @@ impl SpriteRenderer {
 				std::mem::size_of::<GLfloat>() as i32 * 4,
 				(std::mem::size_of::<GLfloat>() * 2) as *const _,
 			);
-			
+		}
+		
+		let mut line_vbo = VertexBufferObject::new();
+		line_vbo.enable();
+		
+		unsafe{
+			gl::VertexAttribPointer(
+				2,
+				2,
+				gl::FLOAT,
+				gl::FALSE as GLboolean,
+				0,
+				ptr::null(),
+			);
+		}
+		
+		let mut text_vbo = VertexBufferObject::new();
+		text_vbo.enable();
+		
+		unsafe{
+			gl::VertexAttribPointer(
+				3,
+				2,
+				gl::FLOAT,
+				gl::FALSE as GLboolean,
+				std::mem::size_of::<GLfloat>() as i32 * 4,
+				ptr::null(),
+			);
+		}
+		
+		unsafe{
+			gl::VertexAttribPointer(
+				4,
+				2,
+				gl::FLOAT,
+				gl::FALSE as GLboolean,
+				std::mem::size_of::<GLfloat>() as i32 * 4,
+				(std::mem::size_of::<GLfloat>() * 2) as *const _,
+			);
 		}
 		
 		let quad_vs_src = include_str!("quad.vs.glsl");
 		let quad_fs_src = include_str!("quad.fs.glsl");
 		let quad_vs = graphics.compile_shader(quad_vs_src, gl::VERTEX_SHADER);
 		let quad_fs = graphics.compile_shader(quad_fs_src, gl::FRAGMENT_SHADER);
-		let ortho = nalgebra::Orthographic3::new(0.0, width, 0.0, height, -1.0, 1.0).unwrap();
+		let ortho = nalgebra::Orthographic3::new(0.0, width, 0.0, height, -1.0, 1.0).into_inner();
 		
-		let mut quad_program = ShaderProgram::compile(quad_vs, quad_fs).expect("Could not compile shader");
+		let quad_program = ShaderProgram::compile(quad_vs, quad_fs).expect("Could not compile shader");
 		quad_program.enable();
 		quad_program.set_uniform_matrix4("Projection", ortho.as_slice());
 		quad_program.set_uniform_vec4("in_color", &vec![0.0, 1.0, 1.0, 1.0]);
@@ -369,22 +485,6 @@ impl SpriteRenderer {
 		circle_program.set_uniform_matrix4("Projection", ortho.as_slice());
 		circle_program.set_float("border_width", 15.0);
 		
-		
-		let mut line_vbo = VertexBufferObject::new();
-		line_vbo.enable();
-		
-		unsafe{			
-			gl::EnableVertexAttribArray(3);
-			gl::VertexAttribPointer(
-				3,
-				2,
-				gl::FLOAT,
-				gl::FALSE as GLboolean,
-				0,
-				ptr::null(),
-			);
-		}
-		
 		let line_vs_src = include_str!("line.vs.glsl");
 		let line_fs_src = include_str!("line.fs.glsl");
 		let line_vs = graphics.compile_shader(line_vs_src, gl::VERTEX_SHADER);
@@ -393,6 +493,15 @@ impl SpriteRenderer {
 		let mut line_program = ShaderProgram::compile(line_vs, line_fs).expect("Could not compile shader");
 		line_program.enable();
 		line_program.set_uniform_matrix4("Projection", ortho.as_slice());
+		
+		let text_vs_src = include_str!("text.vs.glsl");
+		let text_fs_src = include_str!("text.fs.glsl");
+		let text_vs = graphics.compile_shader(text_vs_src, gl::VERTEX_SHADER);
+		let text_fs = graphics.compile_shader(text_fs_src, gl::FRAGMENT_SHADER);
+		
+		let mut text_program = ShaderProgram::compile(text_vs, text_fs).expect("Could not compile shader");
+		text_program.enable();
+		text_program.set_uniform_matrix4("Projection", ortho.as_slice());
 	
 		unsafe {
 			gl::DeleteShader(quad_fs);
@@ -401,6 +510,27 @@ impl SpriteRenderer {
 			gl::DeleteShader(circle_vs);
 			gl::DeleteShader(line_fs);
 			gl::DeleteShader(line_vs);
+		}
+		
+		let font_data = include_bytes!("./GoudyStMTT.ttf");
+		let font = rusttype::Font::from_bytes(font_data as &[u8]).expect("Error loading font");
+		let font_cache = rusttype::gpu_cache::Cache::builder()
+			.dimensions(256, 256)
+			.build();
+		
+		unsafe {
+			gl::PixelStorei(gl::UNPACK_ALIGNMENT, 1);
+		}
+   
+		let mut text_texture = Texture::new();
+		text_texture.enable();
+		text_texture.set(256, 256, &vec![128u8; (256 * 256) as usize]);
+		
+		unsafe{
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP_TO_EDGE as _);
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_T, gl::CLAMP_TO_EDGE as _);
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR as _);
+            gl::TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR as _);
 		}
 		
 		return SpriteRenderer {
@@ -413,7 +543,14 @@ impl SpriteRenderer {
 			line_vbo,
 			line_program,
 			
+			text_vbo,
+			text_texture,
+			text_program,
+			
+			font,
+			font_cache,
 			ortho,
+			test: 0,
 		};
 	}
 
@@ -435,18 +572,19 @@ impl SpriteRenderer {
 		self.line_program.enable();
 	}
 	
+	pub fn enable_text(&mut self){
+		self.quad_vao.enable();
+		self.text_vbo.enable();
+		self.text_texture.enable();
+		self.text_program.enable();
+	}
+	
 	pub fn draw_rect(&self, x: f32, y: f32, w: f32, h: f32, color: &Color){
 		let translation_mat = self.ortho * nalgebra::base::Matrix4::new_translation(&nalgebra::base::Vector3::new(x, y, 0.0));
 		let scale_mat = translation_mat * nalgebra::base::Matrix4::new_nonuniform_scaling(&nalgebra::base::Vector3::new(w, h, 0.0));
 		self.quad_program.set_uniform_matrix4("Projection", scale_mat.as_slice());
-		let colors: [f32; 4] = [
-			color.r as f32 / 255.0, 
-			color.g as f32 / 255.0, 
-			color.b as f32 / 255.0, 
-			color.a as f32 / 255.0
-		];
 		
-		self.quad_program.set_uniform_vec4("in_color", &colors);
+		self.quad_program.set_uniform_vec4("in_color", &color.as_float_array());
 		
 		unsafe{
 			gl::DrawArrays(gl::TRIANGLE_FAN, 0, 4);
@@ -463,7 +601,7 @@ impl SpriteRenderer {
 		}
 	}
 	
-	pub fn draw_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, thickness: f32){
+	pub fn draw_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, thickness: f32, color: &Color){
 		let dx = x2 - x1;
 		let dy = y2 - y1;
 		
@@ -473,17 +611,17 @@ impl SpriteRenderer {
 		let half_dx = (modifier * dx) / 2.0;
 		let half_dy = (modifier * dy) / 2.0;
 		
-		let x3 = x1 + half_dx;
-		let y3 = y1 - half_dy;
+		let x3 = x1 + half_dy;
+		let y3 = y1 - half_dx;
 		
-		let x4 = x2 + half_dx;
-		let y4 = y2 - half_dy;
+		let x4 = x2 + half_dy;
+		let y4 = y2 - half_dx;
 		
-		let x5 = x1 - half_dx;
-		let y5 = y1 + half_dy;
+		let x5 = x1 - half_dy;
+		let y5 = y1 + half_dx;
 		
-		let x6 = x2 - half_dx;
-		let y6 = y2 + half_dy;
+		let x6 = x2 - half_dy;
+		let y6 = y2 + half_dx;
 		
 		let data: [GLfloat; 8] = [
 			x4, y4,
@@ -493,10 +631,72 @@ impl SpriteRenderer {
 		];
 		
 		self.line_vbo.set(&data, BufferType::Dynamic);
+		self.line_program.set_uniform_vec4("in_color", &color.as_float_array());
 		
 		unsafe {
 			gl::DrawArrays(gl::TRIANGLE_FAN, 0, 4);
 		}		
+	}
+	
+	//I don't even know go away
+	pub fn draw_text(&mut self, point: SlashPoint, data: &str, size: f32){
+		let screen_width = 480.0;
+		let screen_height = 360.0;
+		
+		let x = point.x;
+		let y = screen_height - point.y;
+		
+		let font = &self.font;
+		let font_cache = &mut self.font_cache;
+		let text_texture = &mut self.text_texture;
+		
+		let glyphs: Vec<_> = font
+			.layout(data, rusttype::Scale::uniform(size), rusttype::Point{x, y})
+			.map(|glyph| glyph.standalone())
+			.map(|glyph|{ 
+				font_cache.queue_glyph(0, glyph.clone()); 
+				glyph
+			}).collect();
+		
+		font_cache.cache_queued(|rect, data| {
+			text_texture.update(&Rect::new(rect.min.x as f32, rect.min.y as f32, rect.width() as f32, rect.height() as f32), &data);
+		}).expect("Error updating GPU Texture Cache");
+		
+		let mut verts = Vec::new();
+		glyphs.iter().for_each(|g|{
+			if let Ok(Some((uv_rect, screen_rect))) = font_cache.rect_for(0, g) {
+				let origin = rusttype::point(0.0, 0.0);
+				
+				let gl_rect = rusttype::Rect {
+					min: origin
+						+ (rusttype::vector(
+							screen_rect.min.x as f32 / screen_width - 0.5,
+							1.0 - screen_rect.min.y as f32 / screen_height - 0.5,
+						)) * 2.0,
+                    max: origin
+						+ (rusttype::vector(
+							screen_rect.max.x as f32 / screen_width - 0.5,
+							1.0 - screen_rect.max.y as f32 / screen_height - 0.5,
+                        )) * 2.0,
+                };
+				
+				let local_verts: [f32; 24] = [	
+					gl_rect.min.x, gl_rect.max.y, uv_rect.min.x, uv_rect.max.y,
+					gl_rect.min.x, gl_rect.min.y, uv_rect.min.x, uv_rect.min.y,
+					gl_rect.max.x, gl_rect.min.y, uv_rect.max.x, uv_rect.min.y,
+					gl_rect.max.x, gl_rect.min.y, uv_rect.max.x, uv_rect.min.y,
+					gl_rect.max.x, gl_rect.max.y, uv_rect.max.x, uv_rect.max.y,
+					gl_rect.min.x, gl_rect.max.y, uv_rect.min.x, uv_rect.max.y,
+				];
+				verts.extend_from_slice(&local_verts);
+			}
+		});
+		
+		self.text_vbo.set(&verts, BufferType::Dynamic);
+		
+		unsafe {
+			gl::DrawArrays(gl::TRIANGLES, 0, verts.len() as i32 / 4);
+		}
 	}
 }
 
@@ -516,4 +716,13 @@ impl Color{
 			a,
 		}
 	}
+	
+	pub fn as_float_array(&self) -> [f32; 4]{
+		return [
+			self.r as f32 / 255.0, 
+			self.g as f32 / 255.0, 
+			self.b as f32 / 255.0, 
+			self.a as f32 / 255.0,
+		];
+	}	
 }
