@@ -1,3 +1,1 @@
-pub mod gl{
-	
-}
+pub mod gl {}
